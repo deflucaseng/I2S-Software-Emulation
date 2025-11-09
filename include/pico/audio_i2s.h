@@ -11,210 +11,63 @@
 
 /** \file audio_i2s.h
  *  \defgroup pico_audio_i2s pico_audio_i2s
- *  I2S audio output using the PIO
+ *  I2S (Inter-IC Sound) audio output using the PIO
  *
- * This library uses the \ref hardware_pio system to implement a I2S audio interface
+ * This library provides a comprehensive I2S audio interface implementation for the Raspberry Pi Pico,
+ * utilizing the Programmable I/O (PIO) system for high-performance, low-latency audio output.
  *
- * \todo Must be more we need to say here.
- * \todo certainly need an example
+ * The library supports multiple operating modes:
+ * - Single DAC mode: Traditional single-output I2S interface
+ * - Multi-DAC mode: Multiple synchronized DACs sharing a common clock
+ * - Various audio formats: PCM 16-bit stereo/mono, 8-bit audio
+ * - Configurable sample rates and DMA-based streaming
  *
+ * Key Features:
+ * - Hardware-accelerated audio processing using PIO state machines
+ * - DMA-driven data transfer for minimal CPU overhead
+ * - Support for up to 4 synchronized DACs in multi-DAC configuration
+ * - Automatic format conversion and channel mapping
+ * - Real-time frequency adjustment and clock generation
+ * - Built-in silence handling and buffer management
+ *
+ * Usage Overview:
+ * 1. Configure the desired audio format and hardware pins
+ * 2. Call appropriate setup function (audio_i2s_setup() or audio_i2s_setup_multi_dac())
+ * 3. Create and connect audio buffer pools
+ * 4. Enable audio output and stream data
+ *
+ * This modular design allows for easy integration of single or multiple DAC configurations
+ * depending on application requirements.
  */
+
+/** \brief Include modular I2S audio components
+ *
+ * The I2S library is organized into modular components:
+ * - audio_i2s_common.h: Shared definitions, macros, and utility functions
+ * - audio_i2s_single.h: Single DAC implementation with basic I2S functionality
+ * - audio_i2s_multi.h: Multi-DAC implementation for synchronized audio output
+ */
+#include "audio_i2s_common.h"
+#include "audio_i2s_single.h"
+#include "audio_i2s_multi.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#ifndef PICO_AUDIO_I2S_DMA_IRQ
-#ifdef PICO_AUDIO_DMA_IRQ
-#define PICO_AUDIO_I2S_DMA_IRQ PICO_AUDIO_DMA_IRQ
-#else
-#define PICO_AUDIO_I2S_DMA_IRQ 0
-#endif
-#endif
-
-#ifndef PICO_AUDIO_I2S_PIO
-#ifdef PICO_AUDIO_PIO
-#define PICO_AUDIO_I2S_PIO PICO_AUDIO_PIO
-#else
-#define PICO_AUDIO_I2S_PIO 0
-#endif
-#endif
-
-#if !(PICO_AUDIO_I2S_DMA_IRQ == 0 || PICO_AUDIO_I2S_DMA_IRQ == 1)
-#error PICO_AUDIO_I2S_DMA_IRQ must be 0 or 1
-#endif
-
-#if !(PICO_AUDIO_I2S_PIO == 0 || PICO_AUDIO_I2S_PIO == 1)
-#error PICO_AUDIO_I2S_PIO ust be 0 or 1
-#endif
-
-#ifndef PICO_AUDIO_I2S_MAX_CHANNELS
-#ifdef PICO_AUDIO_MAX_CHANNELS
-#define PICO_AUDIO_I2S_MAX_CHANNELS PICO_AUDIO_MAX_CHANNELS
-#else
-#define PICO_AUDIO_I2S_MAX_CHANNELS 2u
-#endif
-#endif
-
-#ifndef PICO_AUDIO_I2S_BUFFERS_PER_CHANNEL
-#ifdef PICO_AUDIO_BUFFERS_PER_CHANNEL
-#define PICO_AUDIO_I2S_BUFFERS_PER_CHANNEL PICO_AUDIO_BUFFERS_PER_CHANNEL
-#else
-#define PICO_AUDIO_I2S_BUFFERS_PER_CHANNEL 3u
-#endif
-#endif
-
-#ifndef PICO_AUDIO_I2S_BUFFER_SAMPLE_LENGTH
-#ifdef PICO_AUDIO_BUFFER_SAMPLE_LENGTH
-#define PICO_AUDIO_I2S_BUFFER_SAMPLE_LENGTH PICO_AUDIO_BUFFER_SAMPLE_LENGTH
-#else
-#define PICO_AUDIO_I2S_BUFFER_SAMPLE_LENGTH 576u
-#endif
-#endif
-
-#ifndef PICO_AUDIO_I2S_SILENCE_BUFFER_SAMPLE_LENGTH
-#ifdef PICO_AUDIO_I2S_SILENCE_BUFFER_SAMPLE_LENGTH
-#define PICO_AUDIO_I2S_SILENCE_BUFFER_SAMPLE_LENGTH PICO_AUDIO_SILENCE_BUFFER_SAMPLE_LENGTH
-#else
-#define PICO_AUDIO_I2S_SILENCE_BUFFER_SAMPLE_LENGTH 256u
-#endif
-#endif
-
-// Allow use of pico_audio driver without actually doing anything much
-#ifndef PICO_AUDIO_I2S_NOOP
-#ifdef PICO_AUDIO_NOOP
-#define PICO_AUDIO_I2S_NOOP PICO_AUDIO_NOOP
-#else
-#define PICO_AUDIO_I2S_NOOP 0
-#endif
-#endif
-
-#ifndef PICO_AUDIO_I2S_MONO_INPUT
-#define PICO_AUDIO_I2S_MONO_INPUT 0
-#endif
-#ifndef PICO_AUDIO_I2S_MONO_OUTPUT
-#define PICO_AUDIO_I2S_MONO_OUTPUT 0
-#endif
-
-#ifndef PICO_AUDIO_I2S_DATA_PIN
-//#warning PICO_AUDIO_I2S_DATA_PIN should be defined when using AUDIO_I2S
-#define PICO_AUDIO_I2S_DATA_PIN 28
-#endif
-
-#ifndef PICO_AUDIO_I2S_CLOCK_PIN_BASE
-//#warning PICO_AUDIO_I2S_CLOCK_PIN_BASE should be defined when using AUDIO_I2S
-#define PICO_AUDIO_I2S_CLOCK_PIN_BASE 26
-#endif
-
-// todo this needs to come from a build config
-/** \brief Base configuration structure used when setting up
- * \ingroup pico_audio_i2s
- */
-typedef struct audio_i2s_config {
-    uint8_t data_pin;
-    uint8_t clock_pin_base;
-    uint8_t dma_channel;
-    uint8_t pio_sm;
-} audio_i2s_config_t;
-
-/** \brief Configuration structure for multi-DAC setup with shared clock
- * \ingroup pico_audio_i2s
- */
-#ifndef PICO_AUDIO_I2S_MAX_DACS
-#define PICO_AUDIO_I2S_MAX_DACS 4
-#endif
-
-typedef struct audio_i2s_multi_dac_config {
-    uint8_t num_dacs;                                    // Number of DACs (1-4)
-    uint8_t data_pins[PICO_AUDIO_I2S_MAX_DACS];        // Data pin for each DAC
-    uint8_t clock_pin_base;                             // Base pin for clock (BCLK and LRCLK)
-    uint8_t dma_channels[PICO_AUDIO_I2S_MAX_DACS];     // DMA channel for each DAC
-    uint8_t clock_pio_sm;                               // PIO state machine for clock generation
-    uint8_t data_pio_sms[PICO_AUDIO_I2S_MAX_DACS];     // PIO state machines for data output
-} audio_i2s_multi_dac_config_t;
-
-/** \brief Set up system to output I2S audio
- * \ingroup pico_audio_i2s
+/** \brief Main I2S Audio Interface
  *
- * \param intended_audio_format \todo
- * \param config The configuration to apply.
- */
-const audio_format_t *audio_i2s_setup(const audio_format_t *intended_audio_format,
-                                               const audio_i2s_config_t *config);
-
-
-/** \brief \todo
- * \ingroup pico_audio_i2s
+ * This is the primary header file for the I2S audio library. All functionality
+ * is provided by the included component headers:
  *
- * \param producer
- * \param connection
- */
-bool audio_i2s_connect_thru(audio_buffer_pool_t *producer, audio_connection_t *connection);
-
-
-/** \brief \todo
- * \ingroup pico_audio_i2s
+ * - Common utilities and configuration macros (audio_i2s_common.h)
+ * - Single DAC implementation for basic use cases (audio_i2s_single.h)  
+ * - Multi-DAC implementation for advanced applications (audio_i2s_multi.h)
  *
- * \param producer
- *
- *  todo make a common version (or a macro) .. we don't want to pull in unnecessary code by default
+ * Include this header to access the complete I2S audio functionality.
+ * The modular design allows you to include specific component headers
+ * if you only need subset functionality.
  */
-bool audio_i2s_connect(audio_buffer_pool_t *producer);
-
-
-/** \brief \todo
- * \ingroup pico_audio_i2s
- *
- * \param producer
- */
-bool audio_i2s_connect_s8(audio_buffer_pool_t *producer);
-
-/** \brief \todo
- * \ingroup pico_audio_i2s
- *
- * \param producer
- * \param buffer_on_give
- * \param buffer_count
- * \param samples_per_buffer
- * \param connection
- * \return
- */
-bool audio_i2s_connect_extra(audio_buffer_pool_t *producer, bool buffer_on_give, uint buffer_count,
-                                 uint samples_per_buffer, audio_connection_t *connection);
-
-
-/** \brief Set up system to output I2S audio
- * \ingroup pico_audio_i2s
- *
- * \param enable true to enable I2S audio, false to disable.
- */
-void audio_i2s_set_enabled(bool enabled);
-
-/** \brief Set up multiple DACs sharing the same I2S clock
- * \ingroup pico_audio_i2s
- *
- * \param intended_audio_format The desired audio format
- * \param config The multi-DAC configuration
- * \return The actual audio format that will be used
- */
-const audio_format_t *audio_i2s_setup_multi_dac(const audio_format_t *intended_audio_format,
-                                                 const audio_i2s_multi_dac_config_t *config);
-
-/** \brief Connect audio buffer pool to a specific DAC in multi-DAC setup
- * \ingroup pico_audio_i2s
- *
- * \param producer The audio buffer pool to connect
- * \param dac_index The index of the DAC (0 to num_dacs-1)
- * \return true if connection successful
- */
-bool audio_i2s_connect_multi_dac(audio_buffer_pool_t *producer, uint8_t dac_index);
-
-/** \brief Enable/disable multi-DAC I2S output
- * \ingroup pico_audio_i2s
- *
- * \param enabled true to enable, false to disable
- */
-void audio_i2s_set_enabled_multi_dac(bool enabled);
 
 #ifdef __cplusplus
 }
